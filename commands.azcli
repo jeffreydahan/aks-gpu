@@ -1,7 +1,7 @@
 ## https://docs.microsoft.com/en-us/azure/aks/gpu-cluster
 # Login and set subscription for deployment
 az login
-subscriptionId=`az account list --query "[?name=='Jeff Dahan - MS Internal'].id | [0]"` # Insert your Subscription Name
+subscriptionId=`az account list --query "[?name==''].id | [0]"` # Insert your Subscription Name
 subscriptionId=`eval echo $subscriptionId`
 echo $subscriptionId
 az account set --subscription ${subscriptionId}
