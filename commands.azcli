@@ -14,6 +14,7 @@ vnetAddressPrefix="172.16.0.0/16"
 subnetName="subnet1"
 subnetAddressPrefix="172.16.0.0/24"
 aksClusterName="aks1"
+vmSku="Standard_NC6" # choose your GPU SKU
 
 kubectl completion bash > $HOME/.bash_completion
 
@@ -45,7 +46,7 @@ az aks nodepool add \
     --cluster-name $aksClusterName \
     --name gpunpauto \
     --node-count 1 \
-    --node-vm-size Standard_NC6 \
+    --node-vm-size $vmSku \
     --node-taints sku=gpuauto:NoSchedule \
     --aks-custom-headers UseGPUDedicatedVHD=true \
     --enable-cluster-autoscaler \
@@ -119,7 +120,7 @@ az aks nodepool add \
     --cluster-name $aksClusterName \
     --name gpunpmanual \
     --node-count 1 \
-    --node-vm-size Standard_NC6 \
+    --node-vm-size $vmSku \
     --node-taints sku=gpumanual:NoSchedule \
     --enable-cluster-autoscaler \
     --min-count 1 \
