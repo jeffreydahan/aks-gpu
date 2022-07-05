@@ -1,0 +1,246 @@
+## https://docs.microsoft.com/en-us/azure/aks/gpu-cluster
+# Login and set subscription for deployment
+az login
+subscriptionId=`az account list --query "[?name=='Jeff Dahan - MS Internal'].id | [0]"` # Insert your Subscription Name
+subscriptionId=`eval echo $subscriptionId`
+echo $subscriptionId
+az account set --subscription ${subscriptionId}
+
+# Set variables; this works better if you pre-create vnet
+location="westeurope"
+resourceGroupName="aks1"
+vnetName="aks1-vnet"
+vnetAddressPrefix="172.16.0.0/16"
+subnetName="subnet1"
+subnetAddressPrefix="172.16.0.0/24"
+aksClusterName="aks1"
+
+kubectl completion bash > $HOME/.bash_completion
+
+# GPU preview prep
+az feature register --name GPUDedicatedVHDPreview --namespace Microsoft.ContainerService
+az feature list -o table --query "[?contains(name, 'Microsoft.ContainerService/GPUDedicatedVHDPreview')].{Name:name,State:properties.state}"
+
+az provider register --namespace Microsoft.ContainerService
+az extension add --name aks-preview
+az extension update --name aks-preview
+
+# create resource group
+az group create -l $location -n $resourceGroupName
+
+# create vnet
+az network vnet create --name $vnetName --resource-group $resourceGroupName --subnet-name $subnetName --address-prefixes $vnetAddressPrefix --subnet-prefixes $subnetAddressPrefix
+vnetSubnetId=`az network vnet subnet show --resource-group $resourceGroupName --name $subnetName --vnet-name $vnetName --query "id"`
+vnetSubnetId=`eval echo $vnetSubnetId`
+echo $vnetSubnetId
+
+# build AKS cluster
+az aks create -n $aksClusterName -g $resourceGroupName --load-balancer-sku standard --node-count 1 --network-plugin kubenet --vnet-subnet-id $vnetSubnetId --generate-ssh-keys
+az aks get-credentials --name $aksClusterName --resource-group $resourceGroupName
+
+######## add GPU Node Pool
+#### OPTION 1 - use custom image with GPU drivers from NVIDIA already installed
+az aks nodepool add \
+    --resource-group $resourceGroupName \
+    --cluster-name $aksClusterName \
+    --name gpunpauto \
+    --node-count 1 \
+    --node-vm-size Standard_NC6 \
+    --node-taints sku=gpuauto:NoSchedule \
+    --aks-custom-headers UseGPUDedicatedVHD=true \
+    --enable-cluster-autoscaler \
+    --min-count 1 \
+    --max-count 1
+
+# GPU ready confirmation
+gpunode=`kubectl get node -o=jsonpath='{.items[?(@.spec.taints[*].value contains "gpu")].metadata.name}'`
+gpunode=(${gpunode[0]})
+echo $gpunode
+
+kubectl describe node $gpunode | grep -e 'Name: ' -e 'Roles: ' -e ' agentpool=' -e 'instance-type=' -e 'Taints: ' -e 'Capacity:' -e 'nvidia.com/gpu: ' -e 'Allocatable:' -e 'nvidia.com/gpu: ' -e ' accelerator=nvidia' 
+
+# Run GPU sample workload 
+rm -rf samples-tf-mnist-demo.yaml
+cat >> samples-tf-mnist-demo.yaml <<EOL
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: samples-tf-mnist-demo
+  name: samples-tf-mnist-demo
+spec:
+  template:
+    metadata:
+      labels:
+        app: samples-tf-mnist-demo
+    spec:
+      containers:
+      - name: samples-tf-mnist-demo
+        image: mcr.microsoft.com/azuredocs/samples-tf-mnist-demo:gpu
+        args: ["--max_steps", "500"]
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+           nvidia.com/gpu: 1
+      restartPolicy: OnFailure
+      tolerations:
+      - key: "sku"
+        operator: "Equal"
+        value: "gpuauto"
+        effect: "NoSchedule"
+EOL
+
+kubectl apply -f samples-tf-mnist-demo.yaml
+kubectl get pods --watch # wait for status of running; may take a few minutes
+kubectl get jobs samples-tf-mnist-demo --watch # when job completes, exit; may take a few minutes
+kubectl get pods --selector app=samples-tf-mnist-demo # look for Completed
+gpupod=`kubectl get pods -o=jsonpath='{.items[?(@.metadata.generateName contains "samples-tf-mnist-demo")].metadata.name}'`
+gpupod=(${gpupod[0]})
+echo $gpupod
+
+kubectl logs $gpupod | grep -i Tesla # Look for Testla 80 
+kubectl logs $gpupod # look for lines showing Accuracy
+
+# Cleanup
+kubectl delete jobs samples-tf-mnist-demo
+az aks nodepool delete \
+    --name gpunpauto \
+    --resource-group $resourceGroupName \
+    --cluster-name $aksClusterName \
+
+
+
+#### OPTION 2 - manually install drivers
+ns="gpu-resources"
+kubectl create namespace $ns
+
+az aks nodepool add \
+    --resource-group $resourceGroupName \
+    --cluster-name $aksClusterName \
+    --name gpunpmanual \
+    --node-count 1 \
+    --node-vm-size Standard_NC6 \
+    --node-taints sku=gpumanual:NoSchedule \
+    --enable-cluster-autoscaler \
+    --min-count 1 \
+    --max-count 4
+
+kubectl create namespace gpu-resources
+
+rm -rf nvidia-device-plugin-ds.yaml
+cat >> nvidia-device-plugin-ds.yaml <<EOL
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: gpu-resources
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      # Mark this pod as a critical add-on; when enabled, the critical add-on scheduler
+      # reserves resources for critical add-on pods so that they can be rescheduled after
+      # a failure.  This annotation works in tandem with the toleration below.
+      annotations:
+        scheduler.alpha.kubernetes.io/critical-pod: ""
+      labels:
+        name: nvidia-device-plugin-ds
+    spec:
+      tolerations:
+      # Allow this pod to be rescheduled while the node is in "critical add-ons only" mode.
+      # This, along with the annotation above marks this pod as a critical add-on.
+      - key: CriticalAddonsOnly
+        operator: Exists
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      - key: "sku"
+        operator: "Equal"
+        value: "gpumanual"
+        effect: "NoSchedule"
+      containers:
+      - image: mcr.microsoft.com/oss/nvidia/k8s-device-plugin:1.11
+        name: nvidia-device-plugin-ctr
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+          - name: device-plugin
+            mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+        - name: device-plugin
+          hostPath:
+            path: /var/lib/kubelet/device-plugins
+EOL
+
+kubectl get nodes --watch # wait until you see the gpu node ready
+
+kubectl apply -f nvidia-device-plugin-ds.yaml
+kubectl get pods -n $ns --watch # wait for nvidia pods to be in running state
+
+# GPU ready confirmation
+gpunode=`kubectl get node -o=jsonpath='{.items[?(@.spec.taints[*].value contains "gpu")].metadata.name}'`
+gpunode=(${gpunode[0]})
+echo $gpunode
+
+kubectl describe node $gpunode | grep -e 'Name: ' -e 'Roles: ' -e ' agentpool=' -e 'instance-type=' -e 'Taints: ' -e 'Capacity:' -e 'nvidia.com/gpu: ' -e 'Allocatable:' -e 'nvidia.com/gpu: ' -e ' accelerator=nvidia' 
+
+# Run GPU sample workload 
+
+rm -rf samples-tf-mnist-demo.yaml
+cat >> samples-tf-mnist-demo.yaml <<EOL
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: samples-tf-mnist-demo
+  name: samples-tf-mnist-demo
+spec:
+  template:
+    metadata:
+      labels:
+        app: samples-tf-mnist-demo
+    spec:
+      containers:
+      - name: samples-tf-mnist-demo
+        image: mcr.microsoft.com/azuredocs/samples-tf-mnist-demo:gpu
+        args: ["--max_steps", "500"]
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+           nvidia.com/gpu: 1
+      restartPolicy: OnFailure
+      tolerations:
+      - key: "sku"
+        operator: "Equal"
+        value: "gpuauto"
+        effect: "NoSchedule"
+EOL
+
+kubectl apply -f samples-tf-mnist-demo.yaml
+kubectl get jobs samples-tf-mnist-demo --watch # when job completes, exit; may take a few minutes
+kubectl get pods -n $ns # look for Completed
+gpupods=`kubectl get pods -n $ns -o=jsonpath='{.items[?(@.metadata.generateName contains "samples-tf-mnist-demo")].metadata.name}'`
+gpupod=(${gpupods[0]})
+echo $gpupod
+kubectl describe -n $ns pod $gpupod
+
+
+kubectl logs -n $ns $gpupod 
+
+
+# Cleanup
+kubectl delete -f nvidia-device-plugin-ds.yaml
+kubectl delete jobs samples-tf-mnist-demo
+kubectl delete namespace gpu-resources
+
+az aks nodepool delete \
+    --name gpunpmanual \
+    --resource-group $resourceGroupName \
+    --cluster-name $aksClusterName \
+
