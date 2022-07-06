@@ -7,7 +7,7 @@ echo $subscriptionId
 az account set --subscription ${subscriptionId}
 
 # Set variables; this works better if you pre-create vnet
-location="westeurope"
+location="XXXXXXXX" # enter location
 resourceGroupName="aks1"
 vnetName="aks1-vnet"
 vnetAddressPrefix="172.16.0.0/16"
@@ -17,7 +17,7 @@ aksClusterName="aks1"
 
 az vm list-skus -l $location | jq '.[] | {"Name": .name, GPUs: (.capabilities[]? | select(.name == "GPUs") | .value)} | join ("; GPU Count: ")'
 
-vmSku="Standard_NC6" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
+vmSku="Standard_NV6ads_A10_v5" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
 
 kubectl completion bash > $HOME/.bash_completion
 
