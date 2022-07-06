@@ -15,7 +15,7 @@ subnetName="subnet1"
 subnetAddressPrefix="172.16.0.0/24"
 aksClusterName="aks1"
 
-az vm list-skus -l $location --query "[].[name,capabilities[?starts_with(name, 'GPUs')].value]" -o table | grep -e Column -e \'
+az vm list-skus -l $location | jq '.[] | {"Name": .name, GPUs: (.capabilities[]? | select(.name == "GPUs") | .value)} | join ("; GPU Count: ")'
 
 vmSku="Standard_NC6" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
 
