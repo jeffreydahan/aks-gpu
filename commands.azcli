@@ -1,13 +1,13 @@
 ## https://docs.microsoft.com/en-us/azure/aks/gpu-cluster
 # Login and set subscription for deployment
 az login
-subscriptionId=`az account list --query "[?name=='XXXXXXXXXXXX'].id | [0]"` # Insert your Subscription Name
+subscriptionId=`az account list --query "[?name=='XXXXXXX'].id | [0]"` # Insert your Subscription Name
 subscriptionId=`eval echo $subscriptionId`
 echo $subscriptionId
 az account set --subscription ${subscriptionId}
 
 # Set variables; this works better if you pre-create vnet
-location="XXXXXXXX" # enter location
+location="southcentralus" # enter location  south central us
 resourceGroupName="aks1"
 vnetName="aks1-vnet"
 vnetAddressPrefix="172.16.0.0/16"
