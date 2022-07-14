@@ -1,7 +1,7 @@
 ## https://docs.microsoft.com/en-us/azure/aks/gpu-cluster
 # Login and set subscription for deployment
 az login
-subscriptionId=`az account list --query "[?name=='XXXXXXX'].id | [0]"` # Insert your Subscription Name
+subscriptionId=`az account list --query "[?name=='MS Internal'].id | [0]"` # Insert your Subscription Name
 subscriptionId=`eval echo $subscriptionId`
 echo $subscriptionId
 az account set --subscription ${subscriptionId}
@@ -15,10 +15,12 @@ subnetName="subnet1"
 subnetAddressPrefix="172.16.0.0/24"
 aksClusterName="aks1"
 
+# list out GPU vms available in your location
 az vm list-skus -l $location | jq '.[] | {"Name": .name, GPUs: (.capabilities[]? | select(.name == "GPUs") | .value)} | join ("; GPU Count: ")'
 
 vmSku="Standard_NV6ads_A10_v5" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
 
+# enable kubectl bash completion
 kubectl completion bash > $HOME/.bash_completion
 
 # GPU preview prep
@@ -39,7 +41,7 @@ vnetSubnetId=`eval echo $vnetSubnetId`
 echo $vnetSubnetId
 
 # build AKS cluster
-az aks create -n $aksClusterName -g $resourceGroupName --load-balancer-sku standard --node-count 1 --network-plugin kubenet --vnet-subnet-id $vnetSubnetId --generate-ssh-keys
+az aks create -n $aksClusterName -g $resourceGroupName --load-balancer-sku standard --node-count 1 --network-plugin kubenet --vnet-subnet-id $vnetSubnetId --generate-ssh-keys --yes
 az aks get-credentials --name $aksClusterName --resource-group $resourceGroupName
 
 ######## add GPU Node Pool
@@ -118,18 +120,17 @@ az aks nodepool delete \
 ns="gpu-resources"
 kubectl create namespace $ns
 
-az aks nodepool add \
+az aks nodepool add  \
     --resource-group $resourceGroupName \
     --cluster-name $aksClusterName \
-    --name gpunpmanual \
+    --name gpunpmanual1 \
     --node-count 1 \
     --node-vm-size $vmSku \
     --node-taints sku=gpumanual:NoSchedule \
     --enable-cluster-autoscaler \
     --min-count 1 \
-    --max-count 4
+    --max-count 3
 
-kubectl create namespace gpu-resources
 
 rm -rf nvidia-device-plugin-ds.yaml
 cat >> nvidia-device-plugin-ds.yaml <<EOL
