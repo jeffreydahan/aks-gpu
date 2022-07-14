@@ -8,12 +8,12 @@ az account set --subscription ${subscriptionId}
 
 # Set variables; this works better if you pre-create vnet
 location="southcentralus" # enter location  south central us
-resourceGroupName="aks1"
-vnetName="aks1-vnet"
+resourceGroupName="aks2"
+vnetName="aks2-vnet"
 vnetAddressPrefix="172.16.0.0/16"
 subnetName="subnet1"
 subnetAddressPrefix="172.16.0.0/24"
-aksClusterName="aks1"
+aksClusterName="aks2"
 
 # list out GPU vms available in your location
 az vm list-skus -l $location | jq '.[] | {"Name": .name, GPUs: (.capabilities[]? | select(.name == "GPUs") | .value)} | join ("; GPU Count: ")'
@@ -123,14 +123,17 @@ kubectl create namespace $ns
 az aks nodepool add  \
     --resource-group $resourceGroupName \
     --cluster-name $aksClusterName \
-    --name gpunpmanual1 \
-    --node-count 1 \
+    --name gpunpmanual2 \
+    --node-count 3 \
     --node-vm-size $vmSku \
     --node-taints sku=gpumanual:NoSchedule \
     --enable-cluster-autoscaler \
     --min-count 1 \
     --max-count 3
 
+
+# az vmss list-instances --resource-group MC_aks2_aks2_southcentralus --name aks-gpunpmanual2-25099806-vmss --query "[].{instanceId:instanceId, extension:resources[].id, extProvisioningState:resources[].provisioningState}"
+# az vmss update-instances --instance-ids "*" --name aks-gpunpmanual2-25099806-vmss --resource-group MC_aks2_aks2_southcentralus
 
 rm -rf nvidia-device-plugin-ds.yaml
 cat >> nvidia-device-plugin-ds.yaml <<EOL
