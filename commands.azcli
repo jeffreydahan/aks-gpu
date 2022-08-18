@@ -6,6 +6,7 @@ subscriptionId=`eval echo $subscriptionId`
 echo $subscriptionId
 az account set --subscription ${subscriptionId}
 
+
 # Set variables; this works better if you pre-create vnet
 location="southcentralus" # enter location  south central us
 resourceGroupName="aks2"
@@ -15,8 +16,8 @@ subnetName="subnet1"
 subnetAddressPrefix="172.16.0.0/24"
 aksClusterName="aks2"
 
-# list out GPU vms available in your location
-az vm list-skus -l $location | jq '.[] | {"Name": .name, GPUs: (.capabilities[]? | select(.name == "GPUs") | .value)} | join ("; GPU Count: ")'
+# list out GPU VMs available in selected location
+az vm list-skus -l $location --query "[].{Name:name, Family:family, GPUs:capabilities[?name=='GPUs'].value | [0], vCPUs:capabilities[?name=='vCPUs'].value | [0], MemGB:capabilities[?name=='MemoryGB'].value | [0]} | [?GPUs != null]" --output table
 
 vmSku="Standard_NV6ads_A10_v5" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
 
