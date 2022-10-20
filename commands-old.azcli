@@ -1,0 +1,111 @@
+## https://docs.microsoft.com/en-us/azure/aks/gpu-cluster
+# Login and set subscription for deployment
+az login
+subscriptionId=`az account list --query "[?name=='XXXXXXXXX'].id | [0]"` # Insert your Subscription Name
+subscriptionId=`eval echo $subscriptionId`
+echo $subscriptionId
+az account set --subscription ${subscriptionId}
+az account list --query '[?isDefault].{Name:name, Default:isDefault, SubscriptionId:id, TenantId:tenantId}' --output table
+
+# Set variables; this works better if you pre-create vnet
+location="YYYYYYYYYY" # enter location  Example:  southcentralus
+resourceGroupName="aks"
+vnetName="aks-vnet"
+vnetAddressPrefix="172.16.0.0/16"
+subnetName="subnet1"
+subnetAddressPrefix="172.16.0.0/24"
+aksClusterName="aks"
+
+# list out GPU VMs available in selected location
+az vm list-skus -l $location --query "[].{Name:name, Family:family, GPUs:capabilities[?name=='GPUs'].value | [0], vCPUs:capabilities[?name=='vCPUs'].value | [0], MemGB:capabilities[?name=='MemoryGB'].value | [0]} | [?GPUs != null]" --output table
+
+vmSku="Standard_NV6ads_A10_v5" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
+
+# enable kubectl bash completion
+kubectl completion bash > $HOME/.bash_completion
+
+# GPU preview prep
+az feature register --name GPUDedicatedVHDPreview --namespace Microsoft.ContainerService
+az feature list -o table --query "[?contains(name, 'Microsoft.ContainerService/GPUDedicatedVHDPreview')].{Name:name,State:properties.state}"
+
+az provider register --namespace Microsoft.ContainerService
+az extension add --name aks-preview
+az extension update --name aks-preview
+
+# create resource group
+az group create -l $location -n $resourceGroupName
+
+# create vnet
+az network vnet create --name $vnetName --resource-group $resourceGroupName --subnet-name $subnetName --address-prefixes $vnetAddressPrefix --subnet-prefixes $subnetAddressPrefix
+vnetSubnetId=`az network vnet subnet show --resource-group $resourceGroupName --name $subnetName --vnet-name $vnetName --query "id"`
+vnetSubnetId=`eval echo $vnetSubnetId`
+echo $vnetSubnetId
+
+# build AKS cluster
+az aks create -n $aksClusterName -g $resourceGroupName --load-balancer-sku standard --node-count 1 --network-plugin kubenet --vnet-subnet-id $vnetSubnetId --generate-ssh-keys --yes
+az aks get-credentials --name $aksClusterName --resource-group $resourceGroupName
+
+######## add GPU Node Pool
+#### OPTION 1 - use custom image with GPU drivers from NVIDIA already installed
+az aks nodepool add \
+    --resource-group $resourceGroupName \
+    --cluster-name $aksClusterName \
+    --name gpunpauto \
+    --node-count 1 \
+    --node-vm-size $vmSku \
+    --node-taints sku=gpuauto:NoSchedule \
+    --aks-custom-headers UseGPUDedicatedVHD=true \
+    --enable-cluster-autoscaler \
+    --min-count 1 \
+    --max-count 3
+
+# GPU ready confirmation
+gpunode=`kubectl get node -o=jsonpath='{.items[?(@.spec.taints[*].value contains "gpu")].metadata.name}'`
+gpunode=(${gpunode[0]})
+echo $gpunode
+
+kubectl describe node $gpunode | grep -e 'Name: ' -e 'Roles: ' -e ' agentpool=' -e 'instance-type=' -e 'Taints: ' -e 'Capacity:' -e 'nvidia.com/gpu: ' -e 'Allocatable:' -e 'nvidia.com/gpu: ' -e ' accelerator=nvidia' 
+
+# Run GPU sample workload 
+rm -rf samples-tf-mnist-demo.yaml
+cat >> samples-tf-mnist-demo.yaml <<EOL
+apiVersion: batch/v1
+kind: Job
+metadata:
+  labels:
+    app: samples-tf-mnist-demo
+  name: samples-tf-mnist-demo
+spec:
+  template:
+    metadata:
+      labels:
+        app: samples-tf-mnist-demo
+    spec:
+      containers:
+      - name: samples-tf-mnist-demo
+        image: mcr.microsoft.com/azuredocs/samples-tf-mnist-demo:gpu
+        args: ["--max_steps", "500"]
+        imagePullPolicy: IfNotPresent
+        resources:
+          limits:
+           nvidia.com/gpu: 1
+      restartPolicy: OnFailure
+      tolerations:
+      - key: "sku"
+        operator: "Equal"
+        value: "gpuauto"
+        effect: "NoSchedule"
+EOL
+
+kubectl apply -f samples-tf-mnist-demo.yaml
+kubectl get pods --watch # wait for status of running; may take a few minutes
+kubectl get jobs samples-tf-mnist-demo --watch # when job completes, exit; may take a few minutes
+kubectl get pods --selector app=samples-tf-mnist-demo # look for Completed
+gpupod=`kubectl get pods -o=jsonpath='{.items[?(@.metadata.generateName contains "samples-tf-mnist-demo")].metadata.name}'`
+gpupod=(${gpupod[0]})
+echo $gpupod
+
+kubectl logs $gpupod # look for lines at top describing finding NVIDIA device and then lines showing Accuracy; if found, succeeded
+
+# Cleanup (removes AKS cluster and all resources created above)
+az group delete --name $resourceGroupName --yes

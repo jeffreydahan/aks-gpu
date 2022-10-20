@@ -1,25 +1,25 @@
 ## https://docs.microsoft.com/en-us/azure/aks/gpu-cluster
 # Login and set subscription for deployment
 az login
-subscriptionId=`az account list --query "[?name=='MS Internal'].id | [0]"` # Insert your Subscription Name
+subscriptionId=`az account list --query "[?name=='XXXXXXXXX'].id | [0]"` # Insert your Subscription Name
 subscriptionId=`eval echo $subscriptionId`
 echo $subscriptionId
 az account set --subscription ${subscriptionId}
-
+az account list --query '[?isDefault].{Name:name, Default:isDefault, SubscriptionId:id, TenantId:tenantId}' --output table
 
 # Set variables; this works better if you pre-create vnet
-location="southcentralus" # enter location  south central us
-resourceGroupName="aks2"
-vnetName="aks2-vnet"
+location="YYYYYYYYYY" # enter location  Example:  southcentralus
+resourceGroupName="aks"
+vnetName="aks-vnet"
 vnetAddressPrefix="172.16.0.0/16"
 subnetName="subnet1"
 subnetAddressPrefix="172.16.0.0/24"
-aksClusterName="aks2"
+aksClusterName="aks"
 
 # list out GPU VMs available in selected location
 az vm list-skus -l $location --query "[].{Name:name, Family:family, GPUs:capabilities[?name=='GPUs'].value | [0], vCPUs:capabilities[?name=='vCPUs'].value | [0], MemGB:capabilities[?name=='MemoryGB'].value | [0]} | [?GPUs != null]" --output table
 
-vmSku="Standard_NV6ads_A10_v5" # choose your GPU SKU from above output; Column 2 is the quantity of GPUs for the SKU
+vmSku="Standard_NV6ads_A10_v5" # choose your GPU SKU from above output; example:  Standard_NV6ads_A10_v5      you may need to request quota
 
 # enable kubectl bash completion
 kubectl completion bash > $HOME/.bash_completion
@@ -57,7 +57,7 @@ az aks nodepool add \
     --aks-custom-headers UseGPUDedicatedVHD=true \
     --enable-cluster-autoscaler \
     --min-count 1 \
-    --max-count 1
+    --max-count 3
 
 # GPU ready confirmation
 gpunode=`kubectl get node -o=jsonpath='{.items[?(@.spec.taints[*].value contains "gpu")].metadata.name}'`
@@ -105,8 +105,7 @@ gpupod=`kubectl get pods -o=jsonpath='{.items[?(@.metadata.generateName contains
 gpupod=(${gpupod[0]})
 echo $gpupod
 
-kubectl logs $gpupod | grep -i Tesla # Look for Testla 80 
-kubectl logs $gpupod # look for lines showing Accuracy
+kubectl logs $gpupod # look for lines at top describing finding NVIDIA device and then lines showing Accuracy; if found, succeeded
 
 # Cleanup
 kubectl delete jobs samples-tf-mnist-demo
